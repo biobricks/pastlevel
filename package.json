@@ -1,0 +1,33 @@
+{
+  "name": "pastlevel",
+  "version": "0.0.1",
+  "description": "versioned leveldb",
+  "main": "index.js",
+  "repository": {
+    "type": "git",
+    "url": "http://github.com/biobricks/pastlevel.git"
+  },
+  "keywords": [
+    "commit",
+    "leveldb",
+    "versioning",
+    "versioned",
+    "version",
+    "tracking",
+    "database",
+    "git"
+  ],
+  "author": {
+    "name": "Marc Juul",
+    "email": "npm@juul.io",
+    "url": "https://github.com/juul"
+  },
+  "license": "AGPL-3.0",
+  "dependencies": {
+  },
+  "devDependencies": {
+  },
+  "scripts": {
+    "test": "tape tests/*.js"
+  }
+}
