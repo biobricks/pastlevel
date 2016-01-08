@@ -116,6 +116,10 @@ pastlevel allows multiple heads. You never have to explicitly branch, just check
 
 pastlevel uses [commitdb](https://www.npmjs.com/package/commitdb) to track the version history and stores all the actual database entry for all revisions in one single leveldb database where the key is the hash of the value. This means that the same value is never stored twice and since leveldb already has built-in compression all data is stored in compressed form.
 
+# ToDo
+
+* add options to commitdb so it can operate in a mode where it doesn't actually change a database but instead communicates an array of ops back to the caller. we need this so pastlevel commits can be atomic.
+
 # copyright and license
 
 Copyright 2015 BioBricks Foundation
