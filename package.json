@@ -25,8 +25,12 @@
   "license": "AGPL-3.0",
   "dependencies": {
     "abstract-leveldown": "^2.4.1",
+    "bytewise": "^1.1.0",
     "commitdb": "0.0.2",
+    "levelup": "^1.3.1",
+    "levelup-defaults": "^1.0.2",
     "subleveldown": "^2.1.0",
+    "uuid": "^2.0.1",
     "xtend": "^4.0.1"
   },
   "devDependencies": {},

@@ -118,7 +118,11 @@ pastlevel uses [commitdb](https://www.npmjs.com/package/commitdb) to track the v
 
 # ToDo
 
-* add options to commitdb so it can operate in a mode where it doesn't actually change a database but instead communicates an array of ops back to the caller. we need this so pastlevel commits can be atomic.
+* add checks to see if a put already exists. don't commit if no change is made. have an option to disable this functionality
+
+* add options to both commitdb and pastlevel to allow the information about current checkout and current work index, as well as the work index itself, to be saved to a different database (in which case it will be prefixed with the database's id). this will be important for multi-user operation.
+
+* support atomic commits as an option (only additional change is that the copy operation needs to add all ops to this._ops instead of actually running them. atomic will only make sense in auto mode).
 
 # copyright and license
 
