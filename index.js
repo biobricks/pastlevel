@@ -118,7 +118,7 @@ PastLevel.prototype._saveWorkIndex = function(id, cb) {
         self.workIndex = id
         cb(null, id);
     });
-}
+};
 
 // check if there is a saved work index
 PastLevel.prototype._getWorkIndex = function(cb) {
@@ -131,22 +131,26 @@ PastLevel.prototype._getWorkIndex = function(cb) {
         self.workIndex = id;
         cb(null, id);
     });
-}
+};
 
 // get the key for the data "sublevel"
 PastLevel.prototype._dkey = function(key) {
     return ['data', key];
-}
+};
 
 // get the actual key for the current writing index
 PastLevel.prototype._ikeyWrite = function(key, index) {
     return ['index', index || this.workIndex, key];
-}
+};
 
 // get the actual key for the current reading index
 PastLevel.prototype._ikeyRead = function(key, index) {
-    return ['index', index || this.workIndex || this.cdb.cur, key];
-}
+    if(this.opts.auto) {
+        return ['index', index || this.cdb.cur || '', key];
+    } else {
+        return ['index', index || this.workIndex, key];
+    }
+};
  
 PastLevel.prototype._dput = function(key, value, cb) {
     key = this._dkey(key);
@@ -236,7 +240,7 @@ PastLevel.prototype.commit = function(opts, cb) {
     this.cdb.commit({
         author: "Foo", // TODO
     }, {
-        id: this.workingIndex,
+        id: this.workIndex,
         batchFunc: function(ops, opts, cb) {
             self._ops = self._ops.concat(ops);
             process.nextTick(cb);
@@ -246,7 +250,7 @@ PastLevel.prototype.commit = function(opts, cb) {
             if(err) return cb(err);
 
             if(self.opts.auto) {
-                self.workingIndex = uuid();
+                self.workIndex = uuid();
                 cb(null, id);
                 return;
             }
@@ -309,7 +313,7 @@ PastLevel.prototype._copyIndex = function(src, dst, cb) {
 };
  
 PastLevel.prototype._get = function (key, opts, cb) {
-    
+
     var self = this;
     this.db.get(this._ikeyRead(key), function(err, val) {
         if(err) return cb(err);
@@ -329,14 +333,34 @@ PastLevel.prototype._del = function (key, options, callback) {
 
 
 module.exports = function(db, opts) {
-    opts = xtend({
-        db: PastLevel
-    }, opts || {});
-    
-    if(db) {
-        return levelup(db, opts);
-    } else {
-        return levelup(opts);
+    var past;
+
+    function getPast(db, opts) {
+        past = new PastLevel(db, opts);
+        return past;
     }
+
+    opts = xtend({
+        db: getPast
+    }, opts || {});
+
+    var up;
+
+    if(db) {
+        up = levelup(db, opts);
+    } else {
+        up = levelup(opts);
+    }
+
+    up.cur = function() {
+        return past.cdb.cur || null;
+    };
+
+    up.checkout = function() {
+        return past.cdb.checkout.apply(past.cdb, arguments);
+    }
+
+
+    return up;
 }
 
