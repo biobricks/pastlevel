@@ -197,6 +197,21 @@ PastLevel.prototype._flush = function(cb) {
     });
 };
 
+PastLevel.prototype._del = function(key, opts, cb) {
+    var self = this;
+
+    if(!this.opts.auto) {
+        this._idel(key);
+        this.commit(cb);
+        return;
+    }
+
+    this._copyIndex(this.cdb.cur, this.workIndex, function(err) {
+        this._idel(key);
+        this.commit(cb);
+    });
+};
+
 PastLevel.prototype._put = function(key, value, opts, cb) {
     var self = this;
 
@@ -211,7 +226,6 @@ PastLevel.prototype._put = function(key, value, opts, cb) {
         });
         return;
     }
-
 
     this._copyIndex(this.cdb.cur, this.workIndex, function(err) {
         self.__put(key, value, opts, cb);
@@ -324,12 +338,7 @@ PastLevel.prototype._get = function (key, opts, cb) {
             cb(null, val);
         });
     });
-}
- 
-PastLevel.prototype._del = function (key, options, callback) {
-  delete this._store['_' + key]
-  process.nextTick(callback)
-}
+};
 
 
 module.exports = function(db, opts) {
