@@ -26,9 +26,9 @@ db.put('cookie', 'kat', function(err, commit) {
 });
 ```
 
-## manual control
+## manual mode
 
-If you initialize pastlevel with {auto: false} then you will have to manually call commit in order to commit a new revision:
+If you initialize pastlevel with {auto: false} then you will have to manually call commit in order to commit your changes as a new revision:
 
 ```
 var pastlevel = require('pastlevel');
@@ -45,11 +45,15 @@ db.put('cookie', 'kat', function(err, commit) {
     console.log("still no commit created:", commit);
 
     db.commit(function(err, commit) {
-      
+      if(err) return console.error(err);
+
+      console.log("created new commit with id:", commit);
     });
   });
 });
 ```
+
+WARNING: Manual mode does not currently work when there are multiple connections to the same database (using e.g. multiparty). The problem is that either pastlevel would have to keep track of a different set of uncommitted changes per connection to the database, or uncommitted changes would have to be kept in memory (and risk being lost). If you need this functionality then please post an issue. If there are valid use-cases for this then I'm all ears. For now manual mode mostly exists to facilitate the creation of a git-like single user command line interface.
 
 ## options
 

@@ -4,6 +4,9 @@ var util = require('util');
 var pastlevel = require('../index.js');
 
 /*
+  check that basic "change, checkout"-functionality 
+  is working in auto mode
+
   with autocommit on:
   put a row, 
   get the row again, 
@@ -15,7 +18,7 @@ var pastlevel = require('../index.js');
 
 var db = pastlevel(temp.mkdirSync());
 
-test('simple', function(t) {
+test('get_put_checkout_auto', function(t) {
 
     t.plan(6);
 
