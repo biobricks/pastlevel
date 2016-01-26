@@ -20,8 +20,8 @@ function PastLevel(locationOrDB, opts) {
     }, opts);
     this.opts = opts;
 
-    if(opts.multi !== false) {
-        throw new Error("opts.multi not yet implemented");
+    if(opts.multi && !opts.auto) {
+        throw new Error("Manual mode not currently supported when multi is enabled");
     }
 
     var dbOpts = {
@@ -56,16 +56,24 @@ PastLevel.prototype._open = function(opts, cb) {
 
         self.cdb = commitdb(self.db, {prefix: 'commit'});
 
+        if(self.opts.auto) {
+            // in auto mode
+            // generate the id for the next index
+            // but don't add any data yet
+            // and don't save
+            self.workIndex = uuid(); 
+        }
+
+        if(self.opts.multi) {
+            // don't check out when using multi
+            return cb();
+        }
+
         self.cdb.checkout(function(err, id) {
             if(err) return cb(err);
 
             if(self.opts.auto) {
-                // in auto mode
-                // generate the id for the next index
-                // but don't add any data yet
-                // and don't save
-                self.workIndex = uuid(); 
-                return cb();;
+                return cb();
             }
             
             // check if we have a working index
@@ -258,6 +266,10 @@ PastLevel.prototype.checkout = function(id, opts, cb) {
     if(typeof opts === 'function') {
         cb = opts;
         opts = {};
+    }
+
+    if(this.opts.multi) {
+        opts.remember = false;
     }
 
     var self = this;
@@ -463,16 +475,20 @@ PastLevel.prototype._setUncommitted = function(val, opts, cb) {
     });
 };
 
-PastLevel.prototype.commit = function(opts, cb) {
-    if(typeof opts === 'function') {
+PastLevel.prototype.commit = function(meta, opts, cb) {
+    if(typeof meta === 'function') {
+        cb = meta
+        meta = {};
+        opts = {};
+    } else if(typeof opts === 'function') {
         cb = opts;
         opts = {};
     }
+   
+    meta = meta || {};
 
     var self = this;
-    this.cdb.commit({
-        author: "Foo", // TODO
-    }, {
+    this.cdb.commit(meta, {
         id: this.workIndex,
         batchFunc: function(ops, opts, cb) {
             self._ops = self._ops.concat(ops);
@@ -598,11 +614,12 @@ PastLevel.prototype._delIndex = function(idx, cb) {
 
  
 PastLevel.prototype._get = function (key, opts, cb) {
+    key = this._ikeyRead(key);
 
-    if(this.opts.debug)console.log("[DEBUG]: Getting from:", this._ikeyRead(key));
+    if(this.opts.debug) console.log("[DEBUG]: Getting from:", key);
 
     var self = this;
-    this.db.get(this._ikeyRead(key), function(err, val) {
+    this.db.get(key, function(err, val) {
         if(err) return cb(err);
 
         self.db.get(self._dkey(val), function(err, val) {

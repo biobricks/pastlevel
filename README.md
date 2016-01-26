@@ -53,7 +53,7 @@ db.put('cookie', 'kat', function(err, commit) {
 });
 ```
 
-WARNING: Manual mode does not currently work when there are multiple connections to the same database (using e.g. multiparty). The problem is that either pastlevel would have to keep track of a different set of uncommitted changes per connection to the database, or uncommitted changes would have to be kept in memory (and risk being lost). If you need this functionality then please post an issue. If there are valid use-cases for this then I'm all ears. For now manual mode mostly exists to facilitate the creation of a git-like single user command line interface.
+WARNING: Manual mode does not currently work when there are multiple connections to the same database. The problem is that either pastlevel would have to keep track of a different set of uncommitted changes per connection to the database, or uncommitted changes would have to be kept in memory (and risk being lost). If you need this functionality then please post an issue. If there are valid use-cases for this then I'm all ears. For now manual mode mostly exists to facilitate the creation of a git-like single user command line interface.
 
 ## options
 
@@ -64,9 +64,77 @@ var db = pastlevel('my_database', {
 });
 ```
 
-## API
+# API
 
-The rest of the API is exactly the same as the [commitdb API](https://www.npmjs.com/package/commitdb).
+pastlevel uses commitdb and includes the [commitdb API](https://www.npmjs.com/package/commitdb) API. This means that you can use commitdb API functions such as e.g. .checkout, .prev or .prevStream directly on a pastlevel database. The functions that are different from commitdb are documented below:
+
+## .put(key, value, [opts], cb)
+
+Same syntax as .put from levelup. In auto mode it will automatically create a new commit with the currently checked out commit (if any) as parent and the new commit will become the checked out commit. 
+
+The following additional opts are supported in auto mode:
+
+* prev: Array of parent commit ID(s) for the commit. Specify multiple IDs in order to merge multiple parents.
+* unify: Boolean. Set to true to merge all current heads. Equivalent to specifying an array of all current heads as opts.prev
+* check: Boolean. Set to false to disable checking if prevs actually exist. Default is true.
+
+## .del(key, [opts], cb) 
+
+Same as .del from levelup but with differences shown in .put section further up on this page
+
+## .batch(operations, [opts], cb)
+
+Same as .batch from levelup but with differences shown in .put section further up on this page.
+
+## .batch - chained form
+
+Not yet implemented. ToDo.
+
+## .get
+
+Exactly the same API as levelup.
+
+## .createReadStream, .createKeyStream and .createValueStream
+
+Exactly the same API as levelup except for the following two points:
+
+1: Unlike with a normal levelup database, if the data changes while the read stream is in progress then the stream will emit the changed data. In other words read streams will not be locked to a view of the database as it looked when the stream was started. This is unfortunately impossible to implement using the current available levelup/leveldown API. The upside is that this limitation is only relevant for pastlevel databases in manual mode since auto mode databases cannot experience changes that are not also new commits and read streams _will_ be locked to the current commit.
+
+2: Even in manual mode you can get a read stream that is locked to a view at a particular commit by specifying the commit id as an opt:
+
+```
+var stream = db.createReadStream({id: 'my_commit_id'});
+```
+
+Note that, in manual mode, specifying the id of the currently checked out commit will give a read stream of the database as it looked when that commit was made, not the working index. There is no way to get a read stream that is locked to the working index in manual mode. 
+
+## .close
+
+Same as .get from levelup.
+
+## .commit([meta], [opts], cb)
+
+If the first argument is an object and the second is a function then the first argument is taken to be meta.
+
+meta is an object you wish to attach as meta-data to the commit. This could be e.g. authorship information and timestamp. Don't confuse this metadata with the commitdb metadata. commitdb's metadata contains the data structures used to track version history and should not be tampered with directly.
+
+The opts are the same as explained in the .put documentation further up on this page.
+
+## .merge([meta], [opts], cb)
+
+This is simply syntactic suger to make a commit that merges all heads. Same syntax as .commit otherwise.
+
+Example:
+
+```
+db.commit({
+  name: "Cookie Cat",
+  time: new Date
+}, {);
+
+
+```
+db.commit({
 
 ## explicitly specifying database
 
@@ -82,7 +150,38 @@ var db = pastlevel(rawdb);
 
 However, if you do this then commits will take longer for large databases since a complete (and modified) copy of the previous database index has to be built using only the leveldb get/put/batch primitives. See the _performance_ section for more info.
 
+# multi
+
+If you're planning on having multiple processes access a pastlevel database at the same time (using e.g. multiparty or some other RPC system) then set {multi: true}. If using multi then you _must_ enable auto mode (which is the default). 
+
+Normally when opening a pastlevel database, pastlevel will attempt to check out the previously checked out commit, but when multi is enabled nothing will be checked out per default (since last checked out commit might not have been checked out by you). Instead you will have to manually call .checkout with a specific commit id after opening the database, or if this is a new/emptry database you can just start using it without checking anything out.
+
+# atomicity, frozen views and cleanup
+
+Normal levelup has the following features:
+
+* .put, .del and .batch are atomic
+* read streams are locked to how the db looked when the stream started
+
+The short story is that in auto mode you can rely on pastlevel to provide both of these, with the exception that if a put .put, .del or .batch operation is interrupted before it completes then it can leave behind an index that is never used and which will not be automatically removed. The only effect this has is that the database will be slightly larger than it needs to be since it now has an extra unused index. In the future I plan to have the database automatically remove these junk indexes on next commit.
+
+In manual mode you cannot expect the read streams 
+
+Important things first: The only time that you can ever get into a situation where you're seeing an inconsistant view of a data
+
+For pastlevel, anything that results in a commit is not truly atomic. This means that in auto mode no operations are truly atomic. This is not as bad as it sounds, since you still can never get into a situation where a 
+
+In manual mode .put and .batch are atomic (but of course don't result in a commit).
+
 # performance 
+
+Most operations are pretty fast. A pastlevel .get, .put, del or .batch in manual mode is equivalent to two of the same leveldown operations. Even in auto mode .get is equivalent to two normal .get operations. The one slow part of pastlevel is commits for large datasets. For manual mode this means .commit, .merge and .checkout calls and for auto mode this means any operation that changes the database. See the sub-section on commit performance for more details.
+
+## checkouts
+
+Checkouts are equivalent to a single levelup .put operation in auto mode and don't even touch the database in multi mode. In manual mode checkouts have the same speed as commits (since a working index is then created on checkout).
+
+## commits
 
 On each commit a new index of the entire database is created that represents the database at that revision.
 
@@ -122,7 +221,11 @@ pastlevel uses [commitdb](https://www.npmjs.com/package/commitdb) to track the v
 
 # ToDo
 
-* add checks to see if a put already exists. don't commit if no change is made. have an option to disable this functionality
+* auto-remove junk indexes on next commit
+
+* add 100% atomic mode
+
+* add checks to see if a put already exists. don't commit if no change is made. have an option to disable this functionality. maybe even have an option to only check for puts larger than a certain size.
 
 * add options to both commitdb and pastlevel to allow the information about current checkout and current work index, as well as the work index itself, to be saved to a different database (in which case it will be prefixed with the database's id). this will be important for multi-user operation.
 
