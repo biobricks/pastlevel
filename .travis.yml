@@ -1,0 +1,16 @@
+language: node_js
+
+node_js:
+  - "0.12"
+
+install:
+  - npm install
+
+script:
+  # debug output
+  - node --version
+  - npm --version
+  # tests
+  - npm test
+
+sudo: false

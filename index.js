@@ -1,10 +1,13 @@
 var util = require('util');
+var path = require('path');
 var crypto = require('crypto');
 var xtend = require('xtend');
 var levelup = require('levelup');
+var leveldown; // only required if needed
 var defaults = require('levelup-defaults');
 var bytewise = require('bytewise');
 var sublevel = require('subleveldown');
+var fse = require('fs-extra');
 var uuid = require('uuid').v4;
 var through = require('through2');
 var commitdb = require('commitdb');
@@ -15,28 +18,46 @@ function PastLevel(locationOrDB, opts) {
     
     opts = xtend({
         auto: true,
-        multi: false,
+        multidb: false,
+        multiclient: false,
         debug: false
     }, opts);
     this.opts = opts;
 
-    if(opts.multi && !opts.auto) {
-        throw new Error("Manual mode not currently supported when multi is enabled");
+    if(opts.multidb) {
+        throw new Error("fastcommit not implemented");
     }
 
-    var dbOpts = {
+    if(opts.multiclient && !opts.auto) {
+        throw new Error("Manual mode not supported when multi is enabled");
+    }
+
+    if(opts.multidb && typeof locationOrDB !== 'string') {
+        throw new Error("First argument must be a directory path if multidb is set to true");
+    }
+
+    this._dbOpts = {
         keyEncoding: bytewise, 
         valueEncoding: 'json'
     };
 
     this.workIndex = null;
 
+    // these two are only used for multidb
+    this._idb = null; // the currently opened index database
+    this._multiPath = null; // base filesystem path to where databases are stored
+
     if(typeof locationOrDB === 'string') {
         AbstractLevelDOWN.call(this, locationOrDB);
-        this.db = require('levelup')(locationOrDB, dbOpts);
+        if(opts.multidb) {
+            this._multiPath = locationOrDb;
+            locationOrDB = path.join(locationOrDB, 'main');
+        }
+        leveldown = require('leveldown');
+        this.db = require('level')(locationOrDB, this._dbOpts);
     } else if(locationOrDB && locationOrDB.location) {
         AbstractLevelDOWN.call(this, this.db.location);
-        this.db = defaults(locationOrDB, dbOpts);
+        this.db = defaults(locationOrDB, this._dbOpts);
     } else {
         throw new Error("constructor requires a single argument: either a filesystem location for the db or an existing db instance");
     }
@@ -53,6 +74,7 @@ PastLevel.prototype._open = function(opts, cb) {
         if(err) return cb(err)
 
         self._ops = []; // queued database operations
+        self._iops = {}; // queued database operations for indexes (multidb only)
 
         self.cdb = commitdb(self.db, {prefix: 'commit'});
 
@@ -64,13 +86,14 @@ PastLevel.prototype._open = function(opts, cb) {
             self.workIndex = uuid(); 
         }
 
-        if(self.opts.multi) {
-            // don't check out when using multi
+        if(self.opts.multiclient) {
+            // don't check out when using multiclient
             return cb();
         }
 
-        self.cdb.checkout(function(err, id) {
+        self._checkoutOnly(function(err, id) {
             if(err) return cb(err);
+            
 
             if(self.opts.auto) {
                 return cb();
@@ -98,7 +121,7 @@ PastLevel.prototype._open = function(opts, cb) {
     }
 
     // calling .open actually calls ._open
-    this.db.on('open', this.open.bind(this, opts, opened));
+    this.db.on('open', this.open.bind(this, opts, cb));
 };
 
 // create a new working index
@@ -178,7 +201,11 @@ PastLevel.prototype._iput = function(key, value, cb) {
         this._ops.push({type: 'put', key: key, value: value});
         return;
     }
-    this.db.put(key, value, cb);
+    if(this.opts.multidb) {
+        
+    } else {
+        this.db.put(key, value, cb);
+    }
 };
 
 PastLevel.prototype._ddel = function(key, cb) {
@@ -261,23 +288,22 @@ PastLevel.prototype.__put = function(key, value, opts, cb) {
 };
 
 PastLevel.prototype.checkout = function(id, opts, cb) {
-    if(this.opts.auto) return this.cdb.checkout(id, opts, cb);
-
     if(typeof opts === 'function') {
         cb = opts;
         opts = {};
     }
-
-    if(this.opts.multi) {
+    if(this.opts.multiclient) {
         opts.remember = false;
     }
+
+    if(this.opts.auto) return this.cdb.checkout(id, opts, cb);
 
     var self = this;
 
     this._uncommitted(function(err, haveUncommitted) {
         if(haveUncommitted) return cb(new Error("You have uncommitted changes. Either commit these changes or do a reset before checking out another commit."));
         
-        self.cdb.checkout(id, opts, function(err, id) {
+        self._checkoutOnly(id, opts, function(err, id) {
             if(err) return cb(err);
 
             // clear the old contents of the work index
@@ -294,6 +320,29 @@ PastLevel.prototype.checkout = function(id, opts, cb) {
     });
 };
 
+// just do a checkout on this.cdb 
+// (and if multidb:true then open the index database)
+PastLevel.prototype._checkoutOnly = function(id, opts, cb) {
+    var self = this;
+
+    this.cdb.checkout(id, opts, function(err, id) {
+        if(err) return cb(err);
+
+        if(!id || !self.opts.multidb || !self.opts.auto) return cb(null, id);
+
+        // for multidb in auto mode we open the index
+        self._openIndex(id, function(err) {
+            if(err) return cb(err);
+            cb(null, id);
+        });
+    });
+};
+
+PastLevel.prototype._openIndex = function(id, cb) {
+    // TODO make subdirs to ensure we don't run into filesystem subdir limit
+    var dbPath = path.join(this._multiPath, 'indexes', id);
+    var db = levelup(dbPath, this._dbOpts, cb);
+};
 
 // same as "git reset --hard"
 // but beware that any new rows added but uncommitted 

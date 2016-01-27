@@ -1,11 +1,49 @@
+[![NPM][npm-img]][npm-url]
+[![Build Status][ci-img]][ci-url]
 
-NOTE: This module barely exists yet. Come back later.
+NOTE: This module barely exists yet. Don't trust this documentation. Come back later. 
 
 pastlevel is versioning for leveldb where an entire database is versioned. That means you can check out your leveldb database as it looked at any point in the past and it will act like a perfectly normal leveldb instance.
 
 pastlevel is kinda like git, but for databases. 
 
-# usage
+# instantiate
+
+pastlevel can use a single levelup database to store its data, or it can use multiple databases. Using multiple databases drastically speeds up commits for large datasets. See the performance section for more on this. 
+
+## single db mode
+
+Single db mode is the default. In this mode you can pass a file path or an existing levelup instance to pastlevel. If passing a filepath, the levelup database at that location will be created or opened. If you intend to pass a filepath then you mustmanually npm install leveldown. The leveldown module is part of the dev-dependencies but not the production dependencies.
+
+```
+# let pastlevel create the database
+# remember to: npm install leveldown
+
+var pastlevel = require('pastlevel');
+var db = pastlevel('/tmp/my_database');
+```
+
+```
+# using existing levelup instance
+
+var pastlevel = require('pastlevel');
+var levelup = require('levelup');
+
+var ldb = levelup('/tmp/my_database');
+var db = pastlevel(db);
+```
+
+## multi db mode
+
+If you set {multidb: true} then the first argument must be a filesystem path that specifies where to store the databases. You must also manually npm install leveldown.
+
+```
+# remember to run: npm install leveldown
+var pastlevel = require('pastlevel');
+var db = pastlevel('/tmp/my_database', {multi: true});
+```
+
+## automatic mode
 
 pastlevel can be used in automatic mode (the default) as if it was a perfectly normal leveldb instance. Every put, delete or batch operation will automatically result in a new revision and a second argument with the commit metadata will be passed to the callback:
 
@@ -60,7 +98,7 @@ WARNING: Manual mode does not currently work when there are multiple connections
 ```
 var db = pastlevel('my_database', {
   auto: true, // automatically commit on each put, del or batch
-  multi: true // store each index in its own leveldb instance (see performance section)
+  multiclient: true // store each index in its own leveldb instance (see performance section)
 });
 ```
 
@@ -150,11 +188,11 @@ var db = pastlevel(rawdb);
 
 However, if you do this then commits will take longer for large databases since a complete (and modified) copy of the previous database index has to be built using only the leveldb get/put/batch primitives. See the _performance_ section for more info.
 
-# multi
+# multiclient
 
-If you're planning on having multiple processes access a pastlevel database at the same time (using e.g. multiparty or some other RPC system) then set {multi: true}. If using multi then you _must_ enable auto mode (which is the default). 
+If you're planning on having multiple processes access a pastlevel database at the same time (using e.g. multiparty or some other RPC system) then set {multiclient: true}. If using multiclient then you _must_ enable auto mode (which is the default). 
 
-Normally when opening a pastlevel database, pastlevel will attempt to check out the previously checked out commit, but when multi is enabled nothing will be checked out per default (since last checked out commit might not have been checked out by you). Instead you will have to manually call .checkout with a specific commit id after opening the database, or if this is a new/emptry database you can just start using it without checking anything out.
+Normally when opening a pastlevel database, pastlevel will attempt to check out the previously checked out commit, but when multiclient is enabled nothing will be checked out per default (since last checked out commit might not have been checked out by you). Instead you will have to manually call .checkout with a specific commit id after opening the database, or if this is a new/emptry database you can just start using it without checking anything out.
 
 # atomicity, frozen views and cleanup
 
@@ -179,7 +217,7 @@ Most operations are pretty fast. A pastlevel .get, .put, del or .batch in manual
 
 ## checkouts
 
-Checkouts are equivalent to a single levelup .put operation in auto mode and don't even touch the database in multi mode. In manual mode checkouts have the same speed as commits (since a working index is then created on checkout).
+Checkouts are equivalent to a single levelup .put operation in auto mode and don't even touch the database in multiclient mode. In manual mode checkouts have the same speed as commits (since a working index is then created on checkout).
 
 ## commits
 
@@ -236,3 +274,8 @@ pastlevel uses [commitdb](https://www.npmjs.com/package/commitdb) to track the v
 Copyright 2015 BioBricks Foundation
 
 License is [AGPLv3](https://www.gnu.org/licenses/agpl-3.0.txt).
+
+[ci-img]: https://travis-ci.org/biobricks/pastlevel.svg?branch=master
+[ci-url]: https://travis-ci.org/biobricks/pastlevel
+[npm-img]: https://nodei.co/npm/pastlevel.png
+[npm-url]: https://nodei.co/npm/pastlevel/
