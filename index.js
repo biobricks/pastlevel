@@ -1,12 +1,33 @@
 /*
 
+  TODO: Don't use this.cdb.cur ever. 
+        On commit it gets changed before ops are flushed.
+        Swap everything to using this.cdbCur instead
+
+  TODO: Ensure that global vars are all changed on same tick:
+          this.cdbCur
+          this.workIndex
+          this._idb
+          
+        
+
+  Auto:
+    reading form this.cdb.cur
+    writing to workIndex
+    on put/del/batch:
+      copy index
+      open workIndex
+      write to workIndex
+  
+  Manual:
+    read/write workIndex
+    on put/del/batch
+
   TODO: 
 
   * multidb support for:
   ** all the index put, del and batch functions
   ** the flush function
-
-  * add subdir support to _openIndex so we don't hit fs subdir limit
 
 */
 
@@ -49,10 +70,12 @@ function PastLevel(locationOrDB, opts) {
         valueEncoding: 'json'
     };
 
-    this.workIndex = null;
+    this.workIndex = null; // next commid id (used for next commit)
+    this.cdbCur = null; // currently checked out commit id
 
     // these two are only used for multidb
-    this._idb = null; // the currently opened index database
+    this._idb = null; // the current index database
+    this._idbWrite = null; // the current index database for writing
     this._multiPath = null; // base filesystem path to where databases are stored
 
     if(typeof locationOrDB === 'string') {
@@ -155,8 +178,10 @@ PastLevel.prototype._saveWorkIndex = function(id, cb) {
     var self = this;
     this.db.put(['work-index'], id, function(err) {
         if(err) return cb(err);
-        
-        self._openIndex(id, function(err) {
+
+        self.workIndex = id;        
+
+        self._openIdb(id, function(err) {
             cb(null, id);
         });
     });
@@ -171,7 +196,8 @@ PastLevel.prototype._getWorkIndex = function(cb) {
             return cb(err);
         }
 
-        self._openIndex(id, function(err) {
+        self.workIndex = id;
+        self._openIdb(id, function(err) {
             cb(null, id);
         });
     });
@@ -186,19 +212,17 @@ PastLevel.prototype._dkey = function(key) {
 PastLevel.prototype._ikeyWrite = function(key, index) {
     if(this.opts.multidb) {
         return key;
-    } else {
-        return ['index', index || this.workIndex, key];
     }
+    return ['index', index || this.workIndex, key];
 };
 
 // get the actual key for the current reading index
 PastLevel.prototype._ikeyRead = function(key, index) {
+    if(this.opts.multidb) {
+        return key;
+    }
     if(this.opts.auto) {
-        if(this.opts.multidb) {
-            return key;
-        } else {
-            return ['index', index || this.cdb.cur, key];
-        }
+        return ['index', index || this.cdb.cur, key];
     } else {
         return ['index', index || this.workIndex, key];
     }
@@ -206,6 +230,7 @@ PastLevel.prototype._ikeyRead = function(key, index) {
  
 PastLevel.prototype._dput = function(key, value, cb) {
     key = this._dkey(key);
+    if(this.opts.debug) console.log("[DEBUG] Putting to key:", key);
     if(!cb) {
         this._ops.push({type: 'put', key: key, value: value});
         return
@@ -214,10 +239,11 @@ PastLevel.prototype._dput = function(key, value, cb) {
 };
 PastLevel.prototype._iput = function(key, value, cb) {
     key = this._ikeyWrite(key);
-    if(this.opts.debug) console.log("[DEBUG] Putting to:", key);
+    if(this.opts.debug && !this.opts.multidb) console.log("[DEBUG] Putting to:", key);
 
     if(!cb) {
         if(this.opts.multidb) {
+            if(this.opts.debug) console.log("[DEBUG] Putting to key:", key, "in db:", this.workIndex);
             this._iops.push({type: 'put', key: key, value: value});
         } else {
             this._ops.push({type: 'put', key: key, value: value});            
@@ -225,6 +251,7 @@ PastLevel.prototype._iput = function(key, value, cb) {
         return;
     }
     if(this.opts.multidb) {
+        if(this.opts.debug) console.log("[DEBUG] Putting to key:", key, "in db:", this.workIndex);
         this._idb.put(key, value, cb);
     } else {
         this.db.put(key, value, cb);
@@ -261,8 +288,10 @@ PastLevel.prototype._idel = function(key, cb) {
 PastLevel.prototype._flush = function(cb) {
     var self = this;
 
-    this._iFlush(function(err) {
+    this._iflush(function(err) {
         if(err) return cb(err);
+
+  //      console.log("FLUSHING:", self._ops);
 
         self.db.batch(self._ops, function(err) {
             if(err) return cb(err);
@@ -272,13 +301,26 @@ PastLevel.prototype._flush = function(cb) {
     });
 };
 
+PastLevel.prototype._dbName = function(db) {
+    return db.location.match(/\/indexes\/(.*)/)[1].replace(/\//g, '');
+};
+
 // if multidb, flush operations to index database
-PastLevel.prototype._iFlush = function(cb) {
+PastLevel.prototype._iflush = function(cb) {
     if(!this.opts.multidb) return cb();
 
-    this._idb.batch(this._iops, function(err) {
-        if(err) return cb(err);
-        self._ops = [];
+    var db;
+    if(this.opts.auto) {
+        db = this._idbWrite;
+    } else {
+        db = this._idb;
+    }
+
+//    console.log("iiiiFLUSHING:", self._iops, "to db", this._dbName(db));
+
+    db.batch(this._iops, function(err) {
+         if(err) return cb(err);
+        self._iops = [];
         cb();
     });    
 };
@@ -322,7 +364,9 @@ PastLevel.prototype._put = function(key, value, opts, cb) {
         return;
     }
 
-    this._copyIndex(this.cdb.cur, this.workIndex, function(err) {
+    this._preCommitCopyIndex(this.cdb.cur, this.workIndex, function(err) {
+        if(err) return cb(err);
+
         self.__put(key, value, opts, function(err) {
             if(err) return cb(err);
 
@@ -351,9 +395,16 @@ PastLevel.prototype.checkout = function(id, opts, cb) {
         opts.remember = false;
     }
 
-    if(this.opts.auto) return this.cdb.checkout(id, opts, cb);
-
     var self = this;
+
+    if(this.opts.auto) {
+        this._checkoutOnly(id, opts, function(err, id) {
+            if(err) return cb(err);
+            self.cdbCur = id;
+            cb(null, id);
+        });
+        return;
+    }
 
     this._uncommitted(function(err, haveUncommitted) {
         if(haveUncommitted) return cb(new Error("You have uncommitted changes. Either commit these changes or do a reset before checking out another commit."));
@@ -367,7 +418,8 @@ PastLevel.prototype.checkout = function(id, opts, cb) {
 
                 self._copyIndex(id, self.workIndex, function(err) {
                     if(err) return cb(err);
-                    
+
+                    self.cdbCur = id;                    
                     cb(null, id);
                 });
             });
@@ -383,10 +435,11 @@ PastLevel.prototype._checkoutOnly = function(id, opts, cb) {
     this.cdb.checkout(id, opts, function(err, id) {
         if(err) return cb(err);
 
-        if(!id) return cb(null, id);
+        if(!id) return cb(null, null);
 
-        self._openIndex(id, function(err) {
+        self._openIdb(id, function(err) {
             if(err) return cb(err);
+
             cb(null, id);
         });
     });
@@ -404,22 +457,60 @@ PastLevel.prototype._indexPath = function(id) {
     return path.join(this._multiPath, 'indexes', parts);
 };
 
-PastLevel.prototype._openIndex = function(id, cb) {
 
-    this.workIndex = id;
+PastLevel.prototype._openIdb = function(id, opts, cb) {
+    if(typeof opts === 'function') {
+        cb = opts;
+        opts = {};
+    }
+    var self = this;
 
-    if(!this.opts.multidb || !this.opts.auto) return cb(null);
+    if(!this.opts.multidb) return cb(null);
 
     var dbPath = this._indexPath(id);
-    var self = this;
-    levelup(dbPath, this._dbOpts, function(err, db) {
+
+    this._closeIfOpen(this._idb, function(err) {
         if(err) return cb(err);
-        
-        console.log("OPENING INDEX");
-        self._idb = db;
-        cb(null, db);
+
+        self._levelup(dbPath, self._dbOpts, function(err, db) {
+            if(err) return cb(err);
+            
+            self._idb = db;
+            cb(null, db);
+        });
     });
 };
+
+// like normal levelup instantiation
+// but ensures that parent dirs exist
+PastLevel.prototype._levelup = function(dbPath, opts, cb) {
+    fse.mkdirp(path.dirname(dbPath), function(err) {
+        if(err) return cb(err);
+
+        levelup(dbPath, opts, cb);
+    });
+};
+
+PastLevel.prototype._openIndex = function(id, opts, cb) {
+    if(typeof opts === 'function') {
+        cb = opts;
+        opts = {};
+    }
+    var self = this;
+
+    if(!this.opts.multidb) return cb();
+
+    var dbPath = this._indexPath(id);
+    self._levelup(dbPath, self._dbOpts, cb);
+};
+
+
+PastLevel.prototype._closeIfOpen = function(db, cb) {
+    if(!db || !db.isOpen()) {
+        return cb();
+    }
+    db.close(cb);    
+}
 
 // same as "git reset --hard"
 // but beware that any new rows added but uncommitted 
@@ -642,8 +733,23 @@ PastLevel.prototype.commit = function(meta, opts, cb) {
             if(err) return cb(err);
 
             if(self.opts.auto) {
-                self.workIndex = uuid();
-                cb(null, id);
+                if(!self.opts.multidb) {
+                    self.cdbCur = id;
+                    self.workIndex = uuid();
+                    cb(null, id);
+                    return;
+                }
+
+                // close the current index db and start using the new 
+                self._closeIfOpen(self._idb, function(err) {
+                    if(err) return cb(err);
+
+                    self.cdbCur = id;
+                    self.workIndex = uuid();
+                    self._idb = self._idbWrite;
+                    self._idbWrite = null;
+                    cb(null, id);
+                }); 
                 return;
             }
 
@@ -656,6 +762,23 @@ PastLevel.prototype.commit = function(meta, opts, cb) {
     });
 };
 
+
+PastLevel.prototype._preCommitCopyIndex = function(src, dst, cb) {
+    self = this;
+
+    this._copyIndex(src, dst, function(err) {
+        if(err) return cb(err);
+        
+        if(!self.opts.multidb) return cb();
+  
+        self._openIndex(dst, self._dbOpts, function(err, db) {
+            if(err) return cb(err);
+            
+            self._idbWrite = db;
+            cb();
+        })
+    });
+};
 
 // copy one index to a new index in batches
 PastLevel.prototype._copyIndex = function(src, dst, cb) {
@@ -770,18 +893,20 @@ PastLevel.prototype._get = function (key, opts, cb) {
     key = this._ikeyRead(key);
     var db;
     if(this.opts.multidb) {
+        if(this.opts.debug) console.log("[DEBUG]: Getting from key:", key, "in db:", this.cdb.cur, this._dbName(this._idb));
         db = this._idb;
     } else {
+        if(this.opts.debug) console.log("[DEBUG]: Getting from:", key);
         db = this.db;
     }
 
-    if(this.opts.debug) console.log("[DEBUG]: Getting from:", key);
-
     var self = this;
     db.get(key, function(err, val) {
+//        console.log("EEEEEEEE", err, val)
         if(err) return cb(err);
 
         self.db.get(self._dkey(val), function(err, val) {
+//            console.log("OOOOO", err, val)
             if(err) return cb(err);
 
             cb(null, val);

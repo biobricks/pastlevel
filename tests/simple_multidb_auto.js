@@ -5,7 +5,7 @@ var pastlevel = require('../index.js');
 
 /*
   check that basic "change, checkout"-functionality 
-  is working in auto mode
+  is working in auto mode with multidb
 
   with autocommit on:
   put a row, 
@@ -16,9 +16,9 @@ var pastlevel = require('../index.js');
   get the row again
 */
 
-var db = pastlevel(temp.mkdirSync());
+var db = pastlevel(temp.mkdirSync(), {multidb: true, debug: false});
 
-test('get_put_checkout_auto', function(t) {
+test('simple_multidb_auto', function(t) {
 
     t.plan(6);
 
@@ -26,8 +26,6 @@ test('get_put_checkout_auto', function(t) {
 
     db.put('cookie', 'kat', function(err) {
         if(err) return t.fail("Error: " + err);
-        
-        console.log("put success with id:", db.cur());
 
         firstID = db.cur();
         t.equal(typeof firstID, 'string');

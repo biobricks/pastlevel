@@ -20,9 +20,7 @@ var pastlevel = require('../index.js');
   get the row again
 */
 
-
-
-test('get_put_checkout_manual', function(t) {
+test('simple_manual', function(t) {
 
     var db = pastlevel(temp.mkdirSync(), {auto: false});
 
