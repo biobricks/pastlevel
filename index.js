@@ -291,7 +291,9 @@ PastLevel.prototype._flush = function(cb) {
     this._iflush(function(err) {
         if(err) return cb(err);
 
-  //      console.log("FLUSHING:", self._ops);
+        if(self.opts.debug > 1) {
+            console.log("[DEBUG] Flushing to main db:", self._ops);
+        }
 
         self.db.batch(self._ops, function(err) {
             if(err) return cb(err);
@@ -301,8 +303,10 @@ PastLevel.prototype._flush = function(cb) {
     });
 };
 
+// get the commit id for an index db (multidb mode)
 PastLevel.prototype._dbName = function(db) {
-    return db.location.match(/\/indexes\/(.*)/)[1].replace(/\//g, '');
+    var s = db.location.match(/\/indexes\/(.*)/)[1].replace(/\//g, '');
+    return s.slice(0, 8)+'-'+s.slice(8, 12)+'-'+s.slice(12, 16)+'-'+s.slice(16, 20)+'-'+s.slice(20);
 };
 
 // if multidb, flush operations to index database
@@ -316,7 +320,9 @@ PastLevel.prototype._iflush = function(cb) {
         db = this._idb;
     }
 
-//    console.log("iiiiFLUSHING:", self._iops, "to db", this._dbName(db));
+    if(this.opts.debug > 1) {
+        console.log("[DEBUG] Flushing to index db", this._dbName(db) + ': ', self._ops);
+    }
 
     db.batch(this._iops, function(err) {
          if(err) return cb(err);
