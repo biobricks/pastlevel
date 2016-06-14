@@ -214,8 +214,8 @@ Usage example:
 ```
 var firstCommit = uuid(); // generate universally unique id for first commit
 
-// first commit has no opts.prev specified
-db.put('cookie', 'kat', {commit: firstCommit}, function(err) {
+// first commit has prev set to null (not undefined nor false)
+db.put('cookie', 'kat', {commit: firstCommit, prev: null}, function(err) {
 
   var secondCommit = uuid();
   db.put('cookie', 'cat', {commit: secondCommit, prev: firstCommit}, function(err) {
@@ -228,6 +228,8 @@ db.put('cookie', 'kat', {commit: firstCommit}, function(err) {
 ```
 
 A couple of dangers: There is currently no verification that the commit ids are sane. As an example it's possible to use the same id as both commit and prev. This would break everything.
+
+You can use the this syntax even if stateless operation is not turned on. It will take presedence over stateful operation so you can mix and match if needed.
 
 # atomicity, frozen views and cleanup
 

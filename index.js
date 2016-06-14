@@ -13,6 +13,49 @@
 
   TODO: Multidb doesn't work with stateless. Fix this.        
 
+  PROBLEM: Two users committing at the same time in auto mode. 
+           
+           They create two heads.
+           The currently checked out head will be random.
+           Some ways around it:
+             1. Disable multiheaded operation for multi-user access.
+                This would require a lock:
+                   1. Acquire lock
+                     a. If lock is already acquired, push operation to queue
+                   2. Get latest head
+                   3. Put update, changing head
+                   4. While something in queue, keep running them
+                   5. Release lock
+             2. Get .put to somehow report back commit id
+                maybe by having .commitPut/.commitDel/.commitBatch that report it.
+                This doesn't resolve the multi-heads.
+             3. Do all work client side and master-master replicate changes
+                This doesn't resolve the multi-heads either.
+             4. Generate IDs client side.
+                E.g. by having a .genID() function
+                This doesn't resolve the multi-heads either.
+             5. Have an auto-merge system where after each put/del/batch
+                it is checked if there is more than one head, and if so
+                a merge is created before the callback is called.
+                The merge strategy can vary based on data and there can
+                be multiple merge strategy plugins.
+                The simplest being "most recent first".
+             6. Prevent any further commit when there is more than one head
+                until they have been merged. (prompt the user)
+
+           The only way to ensure that there is never more than one head
+           when there are multiple users accessing the same merkle-dag
+           is to lock around the operations:
+             LOCK, get_head, alter_database_making_new_head, UNLOCK
+           And this still doesn't solve the problem, because what if
+           both users really did alter the same head 
+           (e.g. because they were using a laggy connection).
+           The changes would look like one person did something
+           then the other undid all of the changes from the first person
+           and made their own changes. Which is not what happened.
+           And in any case this strategy will break as soon as we have
+           a proper decentralized system.
+
   Auto:
     reading form this.cdb.cur
     writing to workIndex
