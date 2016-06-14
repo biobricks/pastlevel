@@ -1,6 +1,7 @@
 var test = require('tape');
 var temp = require('temp').track();
 var util = require('util');
+var levelup = require('levelup');
 var pastlevel = require('../index.js');
 
 /*
@@ -16,7 +17,8 @@ var pastlevel = require('../index.js');
   get the row again
 */
 
-var db = pastlevel(temp.mkdirSync());
+var ldb = levelup(temp.mkdirSync());
+var db = pastlevel(ldb);
 
 test('simple_auto', function(t) {
 
@@ -27,7 +29,7 @@ test('simple_auto', function(t) {
     db.put('cookie', 'kat', function(err) {
         if(err) return t.fail("Error: " + err);
         
-        console.log("put success with id:", db.cur());
+        console.log("put success with commit id:", db.cur());
 
         firstID = db.cur();
         t.equal(typeof firstID, 'string');

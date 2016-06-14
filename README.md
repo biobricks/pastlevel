@@ -13,7 +13,7 @@ pastlevel can use a single levelup database to store its data, or it can use mul
 
 ## single db mode
 
-Single db mode is the default. In this mode you can pass a file path or an existing levelup instance to pastlevel. If passing a filepath, the levelup database at that location will be created or opened. If you intend to pass a filepath then you mustmanually npm install leveldown. The leveldown module is part of the dev-dependencies but not the production dependencies.
+Single db mode is the default. In this mode you can pass a file path or an existing levelup instance to pastlevel. If passing a filepath, the levelup database at that location will be created or opened. If you intend to pass a filepath then you must npm install leveldown. The leveldown module is part of the dev-dependencies but not the production dependencies.
 
 ```
 # let pastlevel create the database
@@ -91,14 +91,15 @@ db.put('cookie', 'kat', function(err, commit) {
 });
 ```
 
-WARNING: Manual mode does not currently work when there are multiple connections to the same database. The problem is that either pastlevel would have to keep track of a different set of uncommitted changes per connection to the database, or uncommitted changes would have to be kept in memory (and risk being lost). If you need this functionality then please post an issue. If there are valid use-cases for this then I'm all ears. For now manual mode mostly exists to facilitate the creation of a git-like single user command line interface.
+WARNING: Manual mode does not work correctly when there are multiple connections to the same database. Think of manual mode as a git-like mode where a replication (continous or manual) would take care of pushing the committed changes (replication is not part of commitdb).
 
 ## options
 
 ```
 var db = pastlevel('my_database', {
   auto: true, // automatically commit on each put, del or batch
-  multiclient: true // store each index in its own leveldb instance (see performance section)
+  multidb: true, // store each index in its own leveldb instance (see performance section)
+  
 });
 ```
 
@@ -148,31 +149,45 @@ Note that, in manual mode, specifying the id of the currently checked out commit
 
 ## .close
 
-Same as .get from levelup.
+Same as .close from levelup.
 
 ## .commit([meta], [opts], cb)
 
-If the first argument is an object and the second is a function then the first argument is taken to be meta.
+Only relevant in manual mode.
 
 meta is an object you wish to attach as meta-data to the commit. This could be e.g. authorship information and timestamp. Don't confuse this metadata with the commitdb metadata. commitdb's metadata contains the data structures used to track version history and should not be tampered with directly.
 
 The opts are the same as explained in the .put documentation further up on this page.
 
+If the first argument is an object and the second is a function then the first argument is taken to be meta.
+
 ## .merge([meta], [opts], cb)
 
 This is simply syntactic suger to make a commit that merges all heads. Same syntax as .commit otherwise.
 
-Example:
+## .cur() 
 
-```
-db.commit({
-  name: "Cookie Cat",
-  time: new Date
-}, {);
+Return the id of the currently checked out commit (or null if nothing checked out).
 
+## .checkout, .prev, .next, .prevStream, .nextStream, .headStream, .heads, .tails, .isFork, .isTail, .isHead, isMerge
 
-```
-db.commit({
+All of these are the same as for [commitdb](https://github.com/biobricks/commitdb).
+
+## .reset([opts], cb)
+
+Remove all uncommited changes.
+
+If `opts.clean` is set to false then any new keys added to the database will not be automatically removed but the reset operation will be faster. You can call .clean manually later if needed.
+
+Similar to `git reset --hard`. Only applicable in manual mode. 
+
+Not yet supported in multidb mode unless opts.clean is false.
+
+## .clean([opts], cb)
+
+Remove all keys (and their values) that are not referenced anywhere in the entire commit history. Only really useful in manual mode after `.reset({clean: false})`.
+
+Not yet supported in multidb mode.
 
 ## explicitly specifying database
 
@@ -188,11 +203,31 @@ var db = pastlevel(rawdb);
 
 However, if you do this then commits will take longer for large databases since a complete (and modified) copy of the previous database index has to be built using only the leveldb get/put/batch primitives. See the _performance_ section for more info.
 
-# multiclient
+# stateless operation
 
-If you're planning on having multiple processes access a pastlevel database at the same time (using e.g. multiparty or some other RPC system) then set {multiclient: true}. If using multiclient then you _must_ enable auto mode (which is the default). 
+If you're planning on using pastlevel in a scenario where multiple users will be accessing the same pastlevel database then you should use `{stateless: true}` or you'll get in trouble fast. Manual mode will not work with stateless mode.
 
-Normally when opening a pastlevel database, pastlevel will attempt to check out the previously checked out commit, but when multiclient is enabled nothing will be checked out per default (since last checked out commit might not have been checked out by you). Instead you will have to manually call .checkout with a specific commit id after opening the database, or if this is a new/emptry database you can just start using it without checking anything out.
+Normally when opening a pastlevel database, pastlevel will attempt to check out the previously checked out commit, but when stateless mode is enabled nothing will ever be checked out. Instead you will have to manually specify the commit id for the next commit, as well as the previous commit (parent commit in each call to .get, .del, .createReadStream, etc. by passing opts.commit set to the commit id you want to use for the operation.
+
+Usage example:
+
+```
+var firstCommit = uuid(); // generate universally unique id for first commit
+
+// first commit has no opts.prev specified
+db.put('cookie', 'kat', {commit: firstCommit}, function(err) {
+
+  var secondCommit = uuid();
+  db.put('cookie', 'cat', {commit: secondCommit, prev: firstCommit}, function(err) {
+    db.get('cookie', {commit: secondCommit}, function(err, value) {
+
+      console.log("cookie", value);
+    });
+  });
+});
+```
+
+A couple of dangers: There is currently no verification that the commit ids are sane. As an example it's possible to use the same id as both commit and prev. This would break everything.
 
 # atomicity, frozen views and cleanup
 
@@ -201,15 +236,9 @@ Normal levelup has the following features:
 * .put, .del and .batch are atomic
 * read streams are locked to how the db looked when the stream started
 
-The short story is that in auto mode you can rely on pastlevel to provide both of these, with the exception that if a put .put, .del or .batch operation is interrupted before it completes then it can leave behind an index that is never used and which will not be automatically removed. The only effect this has is that the database will be slightly larger than it needs to be since it now has an extra unused index. In the future I plan to have the database automatically remove these junk indexes on next commit.
+In auto mode pastlevel provides both of these, except for the fact that if an operation that modifies the database is interrupted then unused indexes can be left behind indefinitely (taking up space). Hopefully this will be solved in a later version.
 
-In manual mode you cannot expect the read streams 
-
-Important things first: The only time that you can ever get into a situation where you're seeing an inconsistant view of a data
-
-For pastlevel, anything that results in a commit is not truly atomic. This means that in auto mode no operations are truly atomic. This is not as bad as it sounds, since you still can never get into a situation where a 
-
-In manual mode .put and .batch are atomic (but of course don't result in a commit).
+In manual mode .put, .del and .batch are fully atomic (but of course don't result in a commit) and .commit has the problem where it will leave behind unused indexes if interrupted before it completes.
 
 # performance 
 
@@ -217,13 +246,13 @@ Most operations are pretty fast. A pastlevel .get, .put, del or .batch in manual
 
 ## checkouts
 
-Checkouts are equivalent to a single levelup .put operation in auto mode and don't even touch the database in multiclient mode. In manual mode checkouts have the same speed as commits (since a working index is then created on checkout).
+Checkouts are equivalent to a single levelup .put operation in auto mode. In manual mode checkouts have the same speed as commits (since a working index is then created on checkout). In stateless modes checkouts don't work (they alway turn an error).
 
 ## commits
 
 On each commit a new index of the entire database is created that represents the database at that revision.
 
-If pastlevel is allowed to use its "one leveldb instance per index" approach by setting {multidb: true} (the default), then it will use the filesystem to copy the leveldb instance holding the index. If {multidb: false}, which it will be if you explicitly told pastlevel which leveldb instance to use, then a bunch of .batch operations will be used to copy the previous index into a new subleveldown within the given leveldb instance.
+If pastlevel is allowed to use its "one leveldb instance per index" approach by setting {multidb: true} (the default), then it will use the filesystem to copy the leveldb instance holding the index. If {multidb: false}, which it will be if you explicitly told pastlevel which leveldb instance to use, then a bunch of .batch operations will be used to copy the previous index into a new sub-database (like a sublevel) within the given leveldb instance.
 
 Here is a comparison of commit speed without and with multi turned on:
 
@@ -249,29 +278,27 @@ The disadvantage of the multidb approach is that you don't get the full benefit 
 TODO compare disk usage for single and multi
 ```
 
-# differences between pastlevel and git
+# multiple heads
 
 pastlevel allows multiple heads. You never have to explicitly branch, just check out a previous commit and start changing it and merge when you want or never merge, it's up to you!
 
 # implementation notes
 
-pastlevel uses [commitdb](https://www.npmjs.com/package/commitdb) to track the version history and stores all the actual database entry for all revisions in one single leveldb database where the key is the hash of the value. This means that the same value is never stored twice and since leveldb already has built-in compression all data is stored in compressed form.
+pastlevel uses [commitdb](https://www.npmjs.com/package/commitdb) to track the version history and stores all the actual database entry for all revisions in one single leveldb database where the key is the hash of the value. This means that the same value is never stored twice and since leveldb already has built-in compression all data is stored in compressed form (unless you turn on multidb mode).
 
 # ToDo
 
 * auto-remove junk indexes on next commit
 
-* add 100% atomic mode
-
-* add checks to see if a put already exists. don't commit if no change is made. have an option to disable this functionality. maybe even have an option to only check for puts larger than a certain size.
+* add 100% atomic mode (no indexes left behind ever)
 
 * add options to both commitdb and pastlevel to allow the information about current checkout and current work index, as well as the work index itself, to be saved to a different database (in which case it will be prefixed with the database's id). this will be important for multi-user operation.
 
-* support atomic commits as an option (only additional change is that the copy operation needs to add all ops to this._ops instead of actually running them. atomic will only make sense in auto mode).
+* support atomic commits as an option (only additional change is that the copy operation needs to add all ops to this._ops instead of actually running them).
 
 # copyright and license
 
-Copyright 2015 BioBricks Foundation
+Copyright 2015-2016 BioBricks Foundation
 
 License is [AGPLv3](https://www.gnu.org/licenses/agpl-3.0.txt).
 

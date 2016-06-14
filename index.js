@@ -9,7 +9,9 @@
           this.workIndex
           this._idb
           
-        
+  TODO: In stateless mode check that commit indexes aren't re-used (user error) which would break everything.
+
+  TODO: Multidb doesn't work with stateless. Fix this.        
 
   Auto:
     reading form this.cdb.cur
@@ -36,10 +38,9 @@ var path = require('path');
 var crypto = require('crypto');
 var xtend = require('xtend');
 var levelup = require('levelup');
-var leveldown; // only required if needed
+var leveldown; // only require()'d if needed
 var defaults = require('levelup-defaults');
 var bytewise = require('bytewise');
-var sublevel = require('subleveldown');
 var fse = require('fs-extra');
 var uuid = require('uuid').v4;
 var through = require('through2');
@@ -52,13 +53,13 @@ function PastLevel(locationOrDB, opts) {
     opts = xtend({
         auto: true,
         multidb: false,
-        multiclient: false,
+        stateless: false,
         debug: false
     }, opts);
     this.opts = opts;
 
-    if(opts.multiclient && !opts.auto) {
-        throw new Error("Manual mode not supported when multi is enabled");
+    if(opts.stateless && !opts.auto) {
+        throw new Error("Manual mode not supported when stateless is enabled");
     }
 
     if(opts.multidb && typeof locationOrDB !== 'string') {
@@ -84,10 +85,10 @@ function PastLevel(locationOrDB, opts) {
             this._multiPath = locationOrDB;
             locationOrDB = path.join(locationOrDB, 'main');
         }
-        leveldown = require('leveldown');
-        this.db = require('level')(locationOrDB, this._dbOpts);
+        // levelup auto-includes leveldown if you have it installed
+        this.db = levelup(locationOrDB, this._dbOpts);
     } else if(locationOrDB && locationOrDB.location) {
-        AbstractLevelDOWN.call(this, this.db.location);
+        AbstractLevelDOWN.call(this, locationOrDB.location);
         this.db = defaults(locationOrDB, this._dbOpts);
     } else {
         throw new Error("constructor requires a single argument: either a filesystem location for the db or an existing db instance");
@@ -117,8 +118,8 @@ PastLevel.prototype._open = function(opts, cb) {
             self.workIndex = uuid(); 
         }
 
-        if(self.opts.multiclient) {
-            // don't check out when using multiclient
+        if(self.opts.stateless) {
+            // don't check out when using stateless mode
             return cb();
         }
 
@@ -222,7 +223,7 @@ PastLevel.prototype._ikeyRead = function(key, index) {
         return key;
     }
     if(this.opts.auto) {
-        return ['index', index || this.cdb.cur, key];
+        return ['index', index || this.cdbCur, key];
     } else {
         return ['index', index || this.workIndex, key];
     }
@@ -230,31 +231,22 @@ PastLevel.prototype._ikeyRead = function(key, index) {
  
 PastLevel.prototype._dput = function(key, value, cb) {
     key = this._dkey(key);
-    if(this.opts.debug) console.log("[DEBUG] Putting to key:", key);
+    if(this.opts.debug) console.log("[DEBUG] Putting to key:", key, value);
     if(!cb) {
         this._ops.push({type: 'put', key: key, value: value});
         return
     }
     this.db.put(key, value, cb);
 };
-PastLevel.prototype._iput = function(key, value, cb) {
-    key = this._ikeyWrite(key);
-    if(this.opts.debug && !this.opts.multidb) console.log("[DEBUG] Putting to:", key);
+PastLevel.prototype._iput = function(key, value, opts) {
+    key = this._ikeyWrite(key, opts.commit);
+    if(this.opts.debug && !this.opts.multidb) console.log("[DEBUG] Putting to key:", key, value);
 
-    if(!cb) {
-        if(this.opts.multidb) {
-            if(this.opts.debug) console.log("[DEBUG] Putting to key:", key, "in db:", this.workIndex);
-            this._iops.push({type: 'put', key: key, value: value});
-        } else {
-            this._ops.push({type: 'put', key: key, value: value});            
-        }
-        return;
-    }
     if(this.opts.multidb) {
-        if(this.opts.debug) console.log("[DEBUG] Putting to key:", key, "in db:", this.workIndex);
-        this._idb.put(key, value, cb);
+        if(this.opts.debug) console.log("[DEBUG] Putting to key:", key, "in db:", this.workIndex, value);
+        this._iops.push({type: 'put', key: key, value: value});
     } else {
-        this.db.put(key, value, cb);
+        this._ops.push({type: 'put', key: key, value: value});            
     }
 };
 
@@ -357,6 +349,15 @@ PastLevel.prototype._del = function(key, opts, cb) {
 PastLevel.prototype._put = function(key, value, opts, cb) {
     var self = this;
 
+    if(this.opts.stateless) {
+        if(!opts.commit) {
+            return cb("opts.commit is required for stateless operation");
+        };
+        if(!opts.prev) {
+            opts.prev = null;
+        }
+    }
+
     if(!this.opts.auto) {
         this.__put(key, value, opts, function(err) {
             if(err) return cb(err);
@@ -370,13 +371,13 @@ PastLevel.prototype._put = function(key, value, opts, cb) {
         return;
     }
 
-    this._preCommitCopyIndex(this.cdb.cur, this.workIndex, function(err) {
+    this._preCommitCopyIndex((opts.prev !== undefined) ? opts.prev : this.cdb.cur, opts.commit || this.workIndex, function(err) {
         if(err) return cb(err);
 
         self.__put(key, value, opts, function(err) {
             if(err) return cb(err);
 
-            self.commit(cb);
+            self.commit({}, {commit: opts.commit, prev: opts.prev}, cb);
         });
     });
 };
@@ -388,7 +389,7 @@ PastLevel.prototype.__put = function(key, value, opts, cb) {
     var hash = h.digest('hex');
 
     this._dput(hash, value);
-    this._iput(key, hash);
+    this._iput(key, hash, opts);
     cb();
 };
 
@@ -397,8 +398,9 @@ PastLevel.prototype.checkout = function(id, opts, cb) {
         cb = opts;
         opts = {};
     }
-    if(this.opts.multiclient) {
-        opts.remember = false;
+    if(this.opts.stateless) {
+        return cb("checkout makes no sense in stateless mode");
+//        opts.remember = false;
     }
 
     var self = this;
@@ -711,6 +713,8 @@ PastLevel.prototype._setUncommitted = function(val, opts, cb) {
     });
 };
 
+// TODO make _commit that's called internally
+// and give error if commit called when in auto mode
 PastLevel.prototype.commit = function(meta, opts, cb) {
     if(typeof meta === 'function') {
         cb = meta
@@ -725,11 +729,13 @@ PastLevel.prototype.commit = function(meta, opts, cb) {
 
     var self = this;
     this.cdb.commit(meta, {
-        id: this.workIndex,
+        id: opts.commit || this.workIndex,
+        prev: opts.prev,
         batchFunc: function(ops, opts, cb) {
             self._ops = self._ops.concat(ops);
             process.nextTick(cb);
     }}, function(err, id, doc) {
+        if(err) return cb(err);
 
         if(!self.opts.auto) {
             self._setUncommitted(false);
@@ -771,6 +777,11 @@ PastLevel.prototype.commit = function(meta, opts, cb) {
 
 PastLevel.prototype._preCommitCopyIndex = function(src, dst, cb) {
     self = this;
+
+    if(this.opts.debug) {
+        console.log('[DEBUG] Copying index from', src, 'to', dst);
+    }
+    
 
     this._copyIndex(src, dst, function(err) {
         if(err) return cb(err);
@@ -896,23 +907,26 @@ PastLevel.prototype._delIndexMulti = function(id, cb) {
 };
  
 PastLevel.prototype._get = function (key, opts, cb) {
-    key = this._ikeyRead(key);
+
+    if(this.opts.stateless && !opts.commit) {
+        return cb("opts.commit is required for stateless operation");
+    }
+
+    key = this._ikeyRead(key, opts.commit);
     var db;
     if(this.opts.multidb) {
         if(this.opts.debug) console.log("[DEBUG]: Getting from key:", key, "in db:", this.cdb.cur, this._dbName(this._idb));
         db = this._idb;
     } else {
-        if(this.opts.debug) console.log("[DEBUG]: Getting from:", key);
+        if(this.opts.debug) console.log("[DEBUG]: Getting from key:", key);
         db = this.db;
     }
 
     var self = this;
     db.get(key, function(err, val) {
-//        console.log("EEEEEEEE", err, val)
         if(err) return cb(err);
 
         self.db.get(self._dkey(val), function(err, val) {
-//            console.log("OOOOO", err, val)
             if(err) return cb(err);
 
             cb(null, val);
@@ -920,6 +934,66 @@ PastLevel.prototype._get = function (key, opts, cb) {
     });
 };
 
+
+PastLevel.prototype.merge = function() {
+    if(!this.cdb) return;
+    this.cdb.merge.apply(this.cdb, arguments);
+};
+
+PastLevel.prototype.prev = function() {
+    if(!this.cdb) return;
+    this.cdb.prev.apply(this.cdb, arguments);
+};
+
+PastLevel.prototype.next = function() {
+    if(!this.cdb) return;
+    this.cdb.next.apply(this.cdb, arguments);
+};
+
+PastLevel.prototype.prevStream = function() {
+    if(!this.cdb) return;
+    this.cdb.prevStream.apply(this.cdb, arguments);
+};
+
+PastLevel.prototype.nextStream = function() {
+    if(!this.cdb) return;
+    this.cdb.nextStream.apply(this.cdb, arguments);
+};
+
+PastLevel.prototype.headStream = function() {
+    if(!this.cdb) return;
+    this.cdb.headStream.apply(this.cdb, arguments);
+};
+
+PastLevel.prototype.heads = function() {
+    if(!this.cdb) return;
+    this.cdb.heads.apply(this.cdb, arguments);
+};
+
+PastLevel.prototype.tail = function() {
+    if(!this.cdb) return;
+    this.cdb.tail.apply(this.cdb, arguments);
+};
+
+PastLevel.prototype.isFork = function() {
+    if(!this.cdb) return;
+    this.cdb.isFork.apply(this.cdb, arguments);
+};
+
+PastLevel.prototype.isTail = function() {
+    if(!this.cdb) return;
+    this.cdb.isTail.apply(this.cdb, arguments);
+};
+
+PastLevel.prototype.isHead = function() {
+    if(!this.cdb) return;
+    this.cdb.isHead.apply(this.cdb, arguments);
+};
+
+PastLevel.prototype.isMerge = function() {
+    if(!this.cdb) return;
+    this.cdb.isMerge.apply(this.cdb, arguments);
+};
 
 module.exports = function(db, opts) {
     var past;
@@ -933,26 +1007,23 @@ module.exports = function(db, opts) {
         db: getPast
     }, opts || {});
 
-    var up;
-
-    if(db) {
-        up = levelup(db, opts);
-    } else {
-        up = levelup(opts);
-    }
+    var up = levelup(db, opts);
 
     up.cur = function() {
-        return past.cdb.cur || null;
+        if(past.opts.stateless) {
+            return null;
+        } else {
+            return past.cdbCur || null;
+        }
     };
 
-    up.checkout = function() {
-        return past.checkout.apply(past, arguments);
-    };
+    // methods to include from pastdb
+    var pdbMethods = ['checkout', 'commit', 'merge', 'prev', 'next', 'prevStream', 'nextStream', 'headStream', 'heads', 'tail', 'isFork', 'isTail', 'isHead', 'isMerge'];
 
-    up.commit = function() {
-        return past.commit.apply(past, arguments);
-    };
-
+    var i;
+    for(i=0; i < pdbMethods.length; i++) {
+        up[pdbMethods[i]] = past[pdbMethods[i]].bind(past);
+    }
 
     return up;
 }
