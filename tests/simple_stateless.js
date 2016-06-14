@@ -21,12 +21,12 @@ var pastlevel = require('../index.js');
 var ldb = levelup(temp.mkdirSync());
 var db = pastlevel(ldb, {
     stateless: true,
-    debug: true
+    debug: false
 });
 
 test('simple_stateless', function(t) {
 
-    t.plan(5);
+    t.plan(7);
 
     var firstCommit = uuid();
 
@@ -68,6 +68,17 @@ test('simple_stateless', function(t) {
                                 db.put('cookie', 'cutter', {commit: fourthCommit, prev: "foo"}, function(err, val) {                           
                                     t.equal(err instanceof Error, true);
                                     
+                                    db.del('cookie', {commit: fourthCommit, prev: thirdCommit}, function(err) {
+                                        if(err) return t.fail("Error: " + err);
+                                        
+                                        db.get('cookie', {commit: fourthCommit}, function(err, val) {
+                                            
+                                            t.equal(err instanceof Error, true);
+                                            t.equal(err.notFound, true);
+                                            
+                                        });
+                                    });
+
                                 });
                             });
                         });
