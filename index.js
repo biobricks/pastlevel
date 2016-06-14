@@ -258,21 +258,14 @@ PastLevel.prototype._ddel = function(key, cb) {
     }
     this.db.del(key, cb);
 };
-PastLevel.prototype._idel = function(key, cb) {
-    key = this._ikeyWrite(key);
-    if(!cb) {
-        if(this.opts.multidb) {
-            this._iops.push({type: 'del', key: key});
-        } else {
-            this._ops.push({type: 'del', key: key});
-        }
-        return;
-    }
+
+PastLevel.prototype._idel = function(key, opts) {
+    key = this._ikeyWrite(key, opts.commit);
 
     if(this.opts.multidb) {
-        this._idb.del(key, cb);
+        this._iops.push({type: 'del', key: key});
     } else {
-        this.db.del(key, cb);
+        this._ops.push({type: 'del', key: key});
     }
 };
 
@@ -327,23 +320,32 @@ PastLevel.prototype._iflush = function(cb) {
 PastLevel.prototype._del = function(key, opts, cb) {
     var self = this;
 
-    if(!this.opts.auto) {
-        this._idel(key, function(err) {
-            if(err) return cb(err);
-
-            // we now have uncommited changes
-            self._setUncommitted(true);
-
-            // actually run the queued db queries as a batch
-            self._flush(cb);
-        });
-        return;
+    if(this.opts.stateless) {
+        if(!opts.commit) {
+            return cb("opts.commit is required for stateless operation");
+        };
+        if(!opts.prev) {
+            opts.prev = null;
+        }
     }
 
-    this._copyIndex(this.cdb.cur, this.workIndex, function(err) {
-        this._idel(key);
-        this.commit(cb);
+    if(!this.opts.auto) {
+        this._idel(key, opts);
+
+        // we now have uncommited changes
+        self._setUncommitted(true);
+
+        // actually run the queued db queries as a batch
+        self._flush(cb);
+    }
+
+    this._preCommitCopyIndex((opts.prev !== undefined) ? opts.prev : this.cdb.cur, opts.commit || this.workIndex, function(err) {
+        if(err) return cb(err);
+
+        self._idel(key, opts);
+        self.commit({}, {commit: opts.commit, prev: opts.prev}, cb);
     });
+
 };
 
 PastLevel.prototype._put = function(key, value, opts, cb) {

@@ -22,7 +22,7 @@ var db = pastlevel(ldb);
 
 test('simple_auto', function(t) {
 
-    t.plan(6);
+    t.plan(8);
 
     var firstID;
 
@@ -57,6 +57,17 @@ test('simple_auto', function(t) {
                             if(err) return t.fail("Error: " + err);
 
                             t.equal(val, 'kat');
+
+                            db.del('cookie', function(err) {
+                                if(err) return t.fail("Error: " + err);
+
+                                db.get('cookie', function(err, val) {
+
+                                    t.equal(err instanceof Error, true);
+                                    t.equal(err.notFound, true);
+
+                                });
+                            });
                         });
                     });
                 });
